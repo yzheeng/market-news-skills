@@ -4,7 +4,8 @@ market-quotes skill — 结构化行情取数(美股指数 / 个股 / 加密)。
 
 数据源:
   主: yfinance (query1.finance.yahoo.com)
-  备: finnhub.io (需 FINNHUB_API_KEY), alphavantage (需 ALPHAVANTAGE_API_KEY)
+  备: polygon.io (需 POLYGON_API_KEY), finnhub.io (需 FINNHUB_API_KEY),
+      alphavantage (需 ALPHAVANTAGE_API_KEY)
 
 硬性原则: 绝不编造数字。取数失败的标的返回 {"status": "error", "price": null},
 上层 Agent 必须将其报告为「待核实」,不得用任何占位数字冒充。
@@ -49,6 +50,24 @@ NAME_MAP = {
     "ETH-USD": "Ethereum / USD",
     "GC=F": "Gold Futures",
     "CL=F": "WTI Crude Oil Futures",
+}
+
+FINNHUB_SYMBOL_CANDIDATES = {
+    "^NDX": ["^NDX", "NDX", ".NDX"],
+    "^DJI": ["^DJI", "DJI", ".DJI", "DJIA"],
+    "^GSPC": ["^GSPC", "GSPC", ".GSPC", "SPX", ".SPX"],
+    "^IXIC": ["^IXIC", "IXIC", ".IXIC"],
+    "^VIX": ["^VIX", "VIX", ".VIX"],
+    "^SOX": ["^SOX", "SOX", ".SOX"],
+    "^TNX": ["^TNX", "TNX", ".TNX"],
+    "BTC-USD": ["BINANCE:BTCUSDT", "COINBASE:BTC-USD"],
+    "ETH-USD": ["BINANCE:ETHUSDT", "COINBASE:ETH-USD"],
+}
+
+POLYGON_SYMBOL_CANDIDATES = {
+    "^NDX": ["I:NDX"],
+    "^IXIC": ["I:COMP"],
+    "^SOX": ["I:SOX"],
 }
 
 DEFAULT_CONFIG_CANDIDATES = [
@@ -157,30 +176,104 @@ def fetch_yfinance(symbols, retries=3):
     return results, last_ts, remaining
 
 
-def fetch_finnhub(symbol):
-    """备用源 1:finnhub(仅支持普通股票代码,不支持 ^ 指数)。"""
-    key = os.environ.get("FINNHUB_API_KEY")
-    if not key or symbol.startswith("^") or "=" in symbol:
+def polygon_symbol_candidates(symbol):
+    return POLYGON_SYMBOL_CANDIDATES.get(symbol, [])
+
+
+def parse_polygon_aggs(symbol, provider_symbol, data):
+    rows = data.get("results") or []
+    if len(rows) < 1:
+        return None
+    rows = sorted(rows, key=lambda x: x.get("t", 0))
+    latest = rows[-1]
+    prev = rows[-2] if len(rows) >= 2 else None
+    price = latest.get("c")
+    if price in (None, 0):
+        return None
+    prev_close = prev.get("c") if prev else None
+    ts = datetime.fromtimestamp(latest["t"] / 1000, tz=ET) if latest.get("t") else None
+    return {
+        "symbol": symbol,
+        "name": NAME_MAP.get(symbol, symbol),
+        "price": round(float(price), 4),
+        "change": round(float(price - prev_close), 4) if prev_close else None,
+        "change_pct": round(float((price - prev_close) / prev_close * 100), 2) if prev_close else None,
+        "last_trade_day_et": ts.date().isoformat() if ts else None,
+        "source": "polygon",
+        "provider_symbol": provider_symbol,
+        "provider_status": data.get("status"),
+        "status": "ok",
+    }
+
+
+def fetch_polygon(symbol):
+    """备用源 1:Polygon。免费层每分钟 5 次,仅用于优先兜底关键指数。"""
+    key = os.environ.get("POLYGON_API_KEY")
+    candidates = polygon_symbol_candidates(symbol)
+    if not key or not candidates:
         return None
     import requests
-    try:
-        r = requests.get("https://finnhub.io/api/v1/quote",
-                         params={"symbol": symbol, "token": key}, timeout=15)
-        d = r.json()
-        if r.status_code != 200 or not d.get("c"):
-            return None
-        return {
-            "symbol": symbol,
-            "name": NAME_MAP.get(symbol, symbol),
-            "price": round(float(d["c"]), 4),
-            "change": round(float(d.get("d") or 0), 4),
-            "change_pct": round(float(d.get("dp") or 0), 2),
-            "last_trade_day_et": datetime.fromtimestamp(d["t"], tz=ET).date().isoformat() if d.get("t") else None,
-            "source": "finnhub",
-            "status": "ok",
-        }
-    except Exception:
+    end = datetime.now(ET).date()
+    start = end - timedelta(days=14)
+    for provider_symbol in candidates:
+        try:
+            url = f"https://api.polygon.io/v2/aggs/ticker/{provider_symbol}/range/1/day/{start}/{end}"
+            r = requests.get(
+                url,
+                params={"adjusted": "true", "sort": "asc", "limit": 10, "apiKey": key},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                continue
+            q = parse_polygon_aggs(symbol, provider_symbol, r.json())
+            if q:
+                return q
+        except Exception:
+            continue
+        time.sleep(0.2)
+    return None
+
+
+def finnhub_symbol_candidates(symbol):
+    return FINNHUB_SYMBOL_CANDIDATES.get(symbol, [symbol])
+
+
+def parse_finnhub_quote(symbol, provider_symbol, data):
+    price = data.get("c")
+    if price in (None, 0):
         return None
+    return {
+        "symbol": symbol,
+        "name": NAME_MAP.get(symbol, symbol),
+        "price": round(float(price), 4),
+        "change": round(float(data.get("d") or 0), 4),
+        "change_pct": round(float(data.get("dp") or 0), 2),
+        "last_trade_day_et": datetime.fromtimestamp(data["t"], tz=ET).date().isoformat() if data.get("t") else None,
+        "source": "finnhub",
+        "provider_symbol": provider_symbol,
+        "status": "ok",
+    }
+
+
+def fetch_finnhub(symbol):
+    """备用源 1:finnhub。对指数/加密尝试 Finnhub 常见 symbol 写法。"""
+    key = os.environ.get("FINNHUB_API_KEY")
+    if not key or "=" in symbol:
+        return None
+    import requests
+    for provider_symbol in finnhub_symbol_candidates(symbol):
+        try:
+            r = requests.get("https://finnhub.io/api/v1/quote",
+                             params={"symbol": provider_symbol, "token": key}, timeout=15)
+            if r.status_code != 200:
+                continue
+            q = parse_finnhub_quote(symbol, provider_symbol, r.json())
+            if q:
+                return q
+        except Exception:
+            continue
+        time.sleep(0.2)
+    return None
 
 
 def fetch_alphavantage(symbol):
@@ -230,7 +323,7 @@ def main():
 
     # 备用源兜底
     for sym in list(failed):
-        q = fetch_finnhub(sym) or fetch_alphavantage(sym)
+        q = fetch_polygon(sym) or fetch_finnhub(sym) or fetch_alphavantage(sym)
         if q:
             results[sym] = q
             failed.remove(sym)
@@ -242,6 +335,9 @@ def main():
             q = results[sym]
             if sym in last_ts:
                 q["market_status"] = market_status_for(last_ts[sym], sym, now_et)
+            elif q.get("last_trade_day_et"):
+                last_dt = datetime.fromisoformat(q["last_trade_day_et"]).replace(tzinfo=ET)
+                q["market_status"] = market_status_for(last_dt, sym, now_et)
             quotes.append(q)
         else:
             quotes.append({

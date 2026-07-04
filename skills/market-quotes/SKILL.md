@@ -50,7 +50,7 @@ python3 {skill_dir}/quotes.py --config ~/.openclaw/workspace/config/briefing.jso
       "change": -479.92,          // 相对前一交易日收盘的涨跌额
       "change_pct": -1.61,        // 涨跌幅 %
       "last_trade_day_et": "2026-07-02",  // 数据所属交易日(美东)
-      "source": "yfinance",       // 数据源: yfinance / finnhub / alphavantage
+      "source": "yfinance",       // 数据源: yfinance / polygon / finnhub / alphavantage
       "status": "ok",             // ok = 数据可信; error = 取数失败(数值为 null)
       "market_status": "closed_holiday"
     }
@@ -65,4 +65,4 @@ python3 {skill_dir}/quotes.py --config ~/.openclaw/workspace/config/briefing.jso
 
 ## 数据源与降级
 
-主源 yfinance(带控频与指数退避重试,规避 429)。失败时按序降级:finnhub(需环境变量 `FINNHUB_API_KEY`)→ Alpha Vantage(需 `ALPHAVANTAGE_API_KEY`)。备用源不支持 `^` 开头的指数与期货。三源全部失败才返回 `status: error`。
+主源 yfinance(带控频与指数退避重试,规避 429)。失败时按序降级:Polygon(需环境变量 `POLYGON_API_KEY`)→ Finnhub(需 `FINNHUB_API_KEY`)→ Alpha Vantage(需 `ALPHAVANTAGE_API_KEY`)。Polygon 免费层每分钟 5 次,优先兜底关键指数,实测可取 `^NDX`/`^IXIC`/`^SOX`;`^VIX`/`^GSPC`/`^DJI` 可能需更高权限或其他源。Finnhub 可兜底普通股票与部分加密,但指数可能要求额外市场数据订阅。Alpha Vantage 主要兜底普通股票。全部源失败才返回 `status: error`。
