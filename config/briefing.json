@@ -1,0 +1,10 @@
+{
+  "watchlist_indices": ["^NDX", "^DJI", "^GSPC", "^IXIC", "^VIX", "^SOX", "^TNX"],
+  "watchlist_stocks": ["NVDA", "MSFT", "AAPL", "GOOGL", "META", "TSLA"],
+  "watchlist_crypto": ["BTC-USD", "ETH-USD"],
+  "optional_commodities": ["GC=F", "CL=F"],
+  "llm_watch": ["GLM", "DeepSeek", "Kimi", "MiniMax"],
+  "news_lookback_hours": 24,
+  "arxiv_categories": ["cs.AI", "cs.CL", "cs.LG"],
+  "timezone": "Asia/Shanghai"
+}
